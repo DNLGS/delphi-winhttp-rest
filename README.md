@@ -34,7 +34,7 @@ var
 begin
   Http := TClientHttp.Create;
   try
-    Http.AddHeaders('Content-Type: application/json');
+    Http.AddHeaders('Content-Type', 'application/json');
     Http.Post('URL', JSON);
     Http.Get('URL', JSON);
     .
