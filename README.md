@@ -1,30 +1,33 @@
 # ClientHttp
 
-Biblioteca Delphi para requisições HTTP/REST utilizando a API nativa WinHTTP do Windows. Sem dependências externas além das já presentes no sistema operacional.
+Mais um cliente HTTP para Delphi. Feito porque toda vez que eu usava o Indy me dava trabalho pra usar certificado ou acessar um endpoint com HTTPS(Possivelmente eu nao saiba usar ele direito).
+Usa a WinHTTP nativa do Windows — sem dependências externas, sem instalação de componentes, sem surpresa.
+
+> ⚠️ **Projeto em construção.** Funciona para o meu propósito atual, mas ainda está simples e incompleto. Use com essa expectativa.
 
 ## Requisitos
 
 - Delphi XE7 ou superior
-- Windows (a lib é exclusivamente para Windows por depender da WinHTTP)
+- Windows (e só Windows, WinHTTP não negocia)
 
-## Funcionalidades
+## O que já funciona
 
 - Requisições HTTP/REST (GET, POST, PUT, DELETE, etc.)
-- Suporte a HTTPS
-- Autenticação por certificado digital (busca por CN no repositório do Windows)
-- Adição de headers customizados
-- Envio de payload (body) em UTF-8
+- HTTPS
+- Autenticação por certificado digital — busca pelo CN no repositório do Windows
+- Headers customizados
+- Payload em UTF-8
 - Reaproveitamento de sessão para o mesmo host
-- Leitura da resposta como `TStream` ou `String`
+- Resposta como `TStream` ou `String`
 
-## Roadmap
+## O que ainda vem por aí
 
-- [ ] Métodos para leitura dos headers de resposta
+- [ ] Leitura dos headers de resposta
 - [ ] Métodos assíncronos (async/callback)
 
 ## Instalação
 
-Adicione as units do diretório `Source/` ao seu projeto ou ao library path do Delphi.
+Adicione as units da pasta `Source/` ao seu projeto ou ao library path do Delphi. Só isso.
 
 ## Uso básico
 
@@ -36,10 +39,7 @@ begin
   try
     Http.AddHeaders('Content-Type', 'application/json');
     Http.Post('URL', JSON);
-    Http.Get('URL', JSON);
-    .
-    .
-    .
+    // ou Http.Get('URL');
 
     Writeln('Status: ', Http.Status);
     Writeln('Resposta: ', Http.Response);
@@ -48,26 +48,28 @@ begin
   end;
 end;
 ```
-## Exemplo com certificado digital
+
+## Certificado digital
 
 ```delphi
 Http.AddCertificadoByCN('NOME DO CERTIFICADO');
 Http.Post('URL', JSON);
 ```
 
-O certificado é buscado automaticamente no repositório do Windows pelo Common Name (CN).
-Nao tenho certeza se funciona com certificado A3. Nao testei ainda.
+O certificado é buscado pelo Common Name (CN) no repositório do Windows.
+
+> Certificado A3 — não testei ainda, não sei se funciona.
 
 ## Comportamento da sessão
 
-A sessão WinHTTP é reutilizada entre requisições para o mesmo host, melhorando a performance. Ao trocar de host, a sessão é encerrada e uma nova é criada automaticamente.
+A sessão WinHTTP é reutilizada entre requisições para o mesmo host. Trocou de host, a sessão é encerrada e uma nova é criada automaticamente.
 
 ## Estrutura do projeto
 
 ```
 /
 ├── Source/
-|   ├── ClientHttp.pas
+│   ├── ClientHttp.pas
 │   ├── ClientHttp.Core.pas
 │   ├── ClientHttp.Wrapper.pas
 │   ├── ClientHttp.Utils.pas
