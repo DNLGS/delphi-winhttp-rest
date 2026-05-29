@@ -4,8 +4,8 @@ interface
 
 uses
   clientHttp.wrapper, Generics.Collections, SysUtils, Windows, Classes,
-  certificado.aux, StrUtils, ClientHttp.Utils, ClientHttp.Constantes,
-  ClientHttp.Core;
+  StrUtils, ClientHttp.Utils, ClientHttp.Constantes,
+  ClientHttp.Core, ClientHttp.Cert.Aux;
 
 type
   TClientHTTP = class
@@ -21,6 +21,7 @@ type
     FProtocols: TProtocols;
     FProtocol: DWORD;
     FResponseStream : TStream;
+    FHeadersReq : TStringList;
 
     function EnviarReq(Metodo: TMetodo; const APayload: String; AURL: String): Boolean;
     function GetReceiveT: Integer; inline;
@@ -46,6 +47,7 @@ type
     property Protocolos: TProtocols read FProtocols write FProtocols;
     property SendTimeOut: Integer read GetSendT write SetSendT;
     procedure AddHeaders(const AKey, AValue: String);
+    property Headers: TStringList read FHeadersReq;
     procedure Clear;
 
     constructor Create;
@@ -118,7 +120,6 @@ var
   lURI : PwChar;
   lHost : PwChar;
 begin
-  Result := False;
   dwFlags := 0;
   FProtocol := SetProtocol;
 
@@ -135,17 +136,22 @@ begin
   try
     FCore.Open(lHost,lURI,MethodStr[Metodo],lPort, dwFlags);
     FCore.AddPayload(APayload);
+    // Add Certificado
     FCore.AddCertificadoByCN(FCertSubject);
+    // Add Protocols
+    FCore.SetOptionsSession(WINHTTP_OPTION_SECURE_PROTOCOLS, FProtocol);
+    // Add Timeouts
     FCore.SetOptionsSession(WINHTTP_OPTION_CONNECT_TIMEOUT,FConnectTimeOut);
     FCore.SetOptionsSession(WINHTTP_OPTION_SEND_TIMEOUT,FSendTimeOut);
     FCore.SetOptionsSession(WINHTTP_OPTION_RECEIVE_TIMEOUT,FReceiveTimeOut);
-    FCore.SetOptionsSession(WINHTTP_OPTION_SECURE_PROTOCOLS, FProtocol);
 
+    // Add Headers
     for Key in FHeaders.Keys do
     begin
       FCore.AddHeaders(PwChar(Format('%s:%s', [Key, FHeaders[Key]])),0);
     end;
 
+    // Envio
     FCore.Send('');
     Result := True;
   except
@@ -153,6 +159,7 @@ begin
       raise Exception.Create(E.Message);
   end;
 
+  FHeadersReq := FCore.Headers;
   FStatus := FCore.Status;
   FResponse := FCore.ResponseText;
   TMemoryStream(FResponseStream).LoadFromStream(FCore.Response);

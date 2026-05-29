@@ -18,9 +18,15 @@ type
       PBufferCert : Pointer;
       FStatus : Integer;
       FResponse : TStream;
-      FResponseText : String;
+      FBufferSizeRead : DWORD;
+      FBufferRead : array of Byte;
+      FHeaders : TStringList;
       procedure Reset(const AHost: PChar);
       function GetResponseText: String;
+      procedure SetBufferRead(const Value: DWORD);
+      procedure GetHeaders;
+      procedure GetStatusCode;
+      procedure ReadData;
     public
       procedure Open(AHost, AURI, AMethod: PwChar; APort: WORD; AFlags : DWORD);
       procedure Send(AAdditionalHeaders : PwChar);
@@ -29,9 +35,11 @@ type
       procedure SetOptionsReq(dwOption: DWORD; dwFlags : DWORD);
       procedure SetOptionsSession(dwOption: DWORD; dwFlags : DWORD);
       procedure AddHeaders(pwHeader: PwChar; dwFlags: DWORD);
+      property Headers: TStringList read FHeaders;
       property Status: Integer read FStatus;
       property Response: TStream read FResponse;
       property ResponseText: String read GetResponseText;
+      property BufferSizeRead: DWORD read FBufferSizeRead write SetBufferRead;
       constructor Create;
 
       destructor Destroy;override;
@@ -83,6 +91,10 @@ begin
   PBuffer := nil;
   PBufferCert := nil;
   FResponse := TMemoryStream.Create;
+  FBufferSizeRead := 4096;
+  SetLength(FBufferRead, FBufferSizeRead);
+  FHeaders := TStringList.Create;
+  FHeaders.NameValueSeparator := ':';
 end;
 
 destructor TClientHttpCore.Destroy;
@@ -93,6 +105,46 @@ begin
   if PBufferCert <> nil then CertFreeCertificateContext(PBufferCert);
   FResponse.Free;
   inherited;
+end;
+
+procedure TClientHttpCore.GetHeaders;
+var
+  LSize     : DWORD;
+  LLastError: DWORD;
+  LIndex    : DWORD;
+  LRawHeaders : String;
+begin
+  LSize  := 0;
+  LIndex := 0;
+
+  WinHttpQueryHeaders(FRequest,
+    WINHTTP_QUERY_RAW_HEADERS_CRLF,
+    WINHTTP_HEADER_NAME_BY_INDEX,
+    nil,
+    @LSize,
+    @LIndex);
+
+  LLastError := GetLastError;
+  if LLastError <> ERROR_INSUFFICIENT_BUFFER then
+    raise Exception.CreateFmt('Erro: %s Codigo: %d',
+      [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
+
+  SetLength(LRawHeaders, LSize div SizeOf(WChar));
+
+  LIndex := 0;
+  if not WinHttpQueryHeaders(FRequest,
+    WINHTTP_QUERY_RAW_HEADERS_CRLF,
+    WINHTTP_HEADER_NAME_BY_INDEX,
+    PWChar(LRawHeaders),
+    @LSize,
+    @LIndex) then
+  begin
+    LLastError := GetLastError;
+    raise Exception.CreateFmt('Erro: %s Codigo: %d',
+      [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
+  end;
+
+  FHeaders.Text := LRawHeaders;
 end;
 
 function TClientHttpCore.GetResponseText: String;
@@ -110,6 +162,22 @@ begin
 
   Encoding := TEncoding.UTF8;
   Result := Encoding.GetString(Bytes);
+end;
+
+procedure TClientHttpCore.GetStatusCode;
+var
+lstatuscode : DWORD;
+lsize : DWORD;
+begin
+  lstatuscode := 0;
+  lsize := SizeOf(lstatuscode);
+  if not WinHttpQueryHeaders(FRequest,
+    WINHTTP_QUERY_STATUS_CODE or WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_HEADER_NAME_BY_INDEX,
+    @lstatuscode, @lsize, WINHTTP_NO_HEADER_INDEX) then
+    FStatus := 0
+  else
+    FStatus := lstatuscode;
 end;
 
 procedure TClientHttpCore.Open(AHost, AURI, AMethod: PwChar; APort: WORD; AFlags : DWORD);
@@ -153,6 +221,44 @@ begin
   end;
 end;
 
+procedure TClientHttpCore.ReadData;
+var
+  LBytesDisponiveis: DWORD;
+  LBytesLidos      : DWORD;
+  LBufferToRead    : DWORD;
+  LLastError       : DWORD;
+begin
+  repeat
+    LBytesLidos := 0;
+
+    if not WinHttpQueryDataAvailable(FRequest, @LBytesDisponiveis) then
+    begin
+      LLastError := GetLastError;
+      raise Exception.CreateFmt('Erro Query: %s Codigo: %d',
+        [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
+    end;
+
+    if LBytesDisponiveis = 0 then
+      Break;
+
+    if LBytesDisponiveis < DWORD(Length(FBufferRead)) then
+      LBufferToRead := LBytesDisponiveis
+    else
+      LBufferToRead := Length(FBufferRead);
+
+    if not WinHttpReadData(FRequest, @FBufferRead[0], LBufferToRead, @LBytesLidos) then
+    begin
+      LLastError := GetLastError;
+      raise Exception.CreateFmt('Erro Read: %s Codigo: %d',
+        [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
+    end;
+
+    if LBytesLidos > 0 then
+      FResponse.WriteBuffer(FBufferRead[0], LBytesLidos);
+
+  until LBytesDisponiveis = 0;  // condição mais confiável
+end;
+
 procedure TClientHttpCore.Reset(const AHost: PChar);
 begin
   FBuffer := nil;
@@ -190,41 +296,6 @@ end;
 procedure TClientHttpCore.Send(AAdditionalHeaders : PwChar);
 var
   LLastError : DWORD;
-  procedure GetStatus;
-  var
-  lstatuscode : DWORD;
-  lsize : DWORD;
-  begin
-    lstatuscode := 0;
-    lsize := SizeOf(lstatuscode);
-    if not WinHttpQueryHeaders(FRequest,
-      WINHTTP_QUERY_STATUS_CODE or WINHTTP_QUERY_FLAG_NUMBER,
-      WINHTTP_HEADER_NAME_BY_INDEX,
-      @lstatuscode, @lsize, WINHTTP_NO_HEADER_INDEX) then
-      FStatus := 0
-    else
-      FStatus := lstatuscode;
-  end;
-
-  procedure ReadData;
-  var
-    BufferLeitura: array[0..4095] of Byte;
-    BytesLidos: DWORD;
-  begin
-    repeat
-      BytesLidos := 0;
-      if not WinHttpReadData(FRequest, @BufferLeitura[0],
-        SizeOf(BufferLeitura), @BytesLidos) then
-        begin
-          LLastError := GetLastError;
-          raise Exception.CreateFmt('Erro: %s Codigo: %d', [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
-        end;
-      if BytesLidos > 0 then
-        FResponse.WriteBuffer(BufferLeitura[0], BytesLidos);
-     until BytesLidos = 0;
-
-     FResponse.Position := 0;
-  end;
 begin
   if FBufferSize > 0 then
     PBuffer := @FBuffer[0];
@@ -242,8 +313,15 @@ begin
     raise Exception.CreateFmt('Erro: %s Codigo: %d', [TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
   end;
 
-  GetStatus;
+  GetStatusCode;
+  GetHeaders;
   ReadData;
+end;
+
+procedure TClientHttpCore.SetBufferRead(const Value: DWORD);
+begin
+  FBufferSizeRead := Value;
+  SetLength(FBufferRead, FBufferSizeRead);
 end;
 
 procedure TClientHttpCore.SetOptionsReq(dwOption,
