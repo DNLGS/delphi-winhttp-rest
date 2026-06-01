@@ -10,8 +10,6 @@ type
   TProtocol = (pAll, pSSL2, pSSL3, pTLS1_0, pTLS1_1, pTLS1_2);
   TProtocols = set of TProtocol;
 
-
-
 const
   // Portas padrão
   INTERNET_DEFAULT_PORT = 0;
