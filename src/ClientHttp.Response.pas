@@ -12,13 +12,14 @@ type
     FStatusCode: Integer;
     FResponseStream : TMemoryStream;
     FHeaders : TStringList;
+    function GetResponseText : String;
   protected
     procedure ParseHeader(const AValue: String);
     procedure AddStatus(AValue : Integer);
-    procedure GetResponse(const AValue: TStream);
+    function GetStream : TStream;
   public
     property Headers: TStringList read FHeaders;
-    property ResponseText: String read FResponseText;
+    property ResponseText: String read GetResponseText;
     property ResponseStream: TMemoryStream read FResponseStream;
     property StatusCode: Integer read FStatusCode;
     procedure Clear;
@@ -60,15 +61,18 @@ begin
   inherited;
 end;
 
-procedure TClientHttpResponse.GetResponse(const AValue: TStream);
+function TClientHttpResponse.GetResponseText: string;
 var
   LContentType: string;
   LStringStream: TStringStream;
 begin
-  FResponseStream.Clear;
-  FResponseStream.LoadFromStream(AValue);
+  Result := FResponseText;
 
-  FResponseText := '';
+  if Result.Trim <> '' then
+    Exit;
+
+  if (FResponseStream = nil) or (FResponseStream.Size = 0) then
+    Exit;
 
   LContentType := FHeaders.Values['Content-Type'].ToLower.Trim;
 
@@ -77,18 +81,21 @@ begin
      LContentType.Contains('xml') or
      LContentType.Contains('javascript') then
   begin
-    if FResponseStream.Size > 0 then
-    begin
-      LStringStream := TStringStream.Create('', TEncoding.UTF8);
-      try
-        FResponseStream.Position := 0;
-        LStringStream.CopyFrom(FResponseStream, FResponseStream.Size);
-        FResponseText := LStringStream.DataString;
-      finally
-        LStringStream.Free;
-      end;
+    FResponseStream.Position := 0;
+    LStringStream := TStringStream.Create('', TEncoding.UTF8);
+    try
+      LStringStream.CopyFrom(FResponseStream, FResponseStream.Size);
+      Result := LStringStream.DataString;
+      FResponseText := Result;
+    finally
+      LStringStream.Free;
     end;
   end;
+end;
+
+function TClientHttpResponse.GetStream: TStream;
+begin
+  Result := FResponseStream;
 end;
 
 procedure TClientHttpResponse.ParseHeader(const AValue: String);

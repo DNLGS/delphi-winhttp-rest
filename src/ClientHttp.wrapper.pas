@@ -7,6 +7,26 @@ uses Windows, SysUtils;
 type
   HINTERNET = Pointer;
 
+  URL_COMPONENTS = record
+    dwStructSize: DWORD;
+    lpszScheme: PwChar;
+    dwSchemeLength: DWORD;
+    nScheme: DWORD;
+    lpszHostName: PwChar;
+    dwHostNameLength: DWORD;
+    nPort: DWORD;
+    lpszUserName: PwChar;
+    dwUserNameLength: DWORD;
+    lpszPassword: PwChar;
+    dwPasswordLength: DWORD;
+    lpszUrlPath: PwChar;
+    dwUrlPathLength: DWORD;
+    lpszExtraInfo: PwChar;
+    dwExtraInfoLength: DWORD;
+  end;
+
+  PURL_COMPONENTS = ^URL_COMPONENTS;
+
 function WinHttpOpen(
   pszAgentW: PWideChar;
   dwAccessType: DWORD;
@@ -76,6 +96,12 @@ function WinHttpQueryHeaders(
   lpdwIndex: PWORD
 ) : BOOL; stdcall;
 
+function WinHttpCrackUrl(
+  pwszUrl: PwChar;
+  dwUrlLength: DWORD;
+  dwFlags: DWORD;
+  LPURL_COMPONENTS: PURL_COMPONENTS): BOOL; stdcall;
+
 implementation
 
 function WinHttpOpen; external 'winhttp.dll' name 'WinHttpOpen';
@@ -89,5 +115,6 @@ function WinHttpCloseHandle; external 'winhttp.dll' name 'WinHttpCloseHandle';
 function WinHttpAddRequestHeaders; external 'winhttp.dll' name 'WinHttpAddRequestHeaders';
 function WinHttpSetOption; external 'winhttp.dll' name 'WinHttpSetOption';
 function WinHttpQueryHeaders; external 'winhttp.dll' name 'WinHttpQueryHeaders';
+function WinHttpCrackUrl; external 'winhttp.dll' name 'WinHttpCrackUrl';
 
 end.

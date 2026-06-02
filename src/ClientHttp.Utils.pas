@@ -3,24 +3,46 @@ unit ClientHttp.Utils;
 interface
 
 uses
-  StrUtils, SysUtils, Windows;
+  StrUtils, SysUtils, Windows, ClientHttp.wrapper, ClientHttp.Constantes;
 
 type
   TClientHTTPUtils = class
-    class function GetHost(const AURL: String): String;
-    class function GetURI(const AURL: String): String;
-    class function GetPort(const AURL: String): WORD;
     class function GetErrorMessage(ErrorCode: DWORD): string;
-    class function IsHttps(const AURL: String): Boolean; inline;
+    class function CrackURL(const AURL: String): URL_COMPONENTS;
+    class procedure CheckWinHttpResult(Success: Boolean; const Context: string);
   end;
 
 implementation
 
 { TClientHTTPUtils }
 
-class function TClientHTTPUtils.IsHttps(const AURL: String): Boolean;
+
+class procedure TClientHTTPUtils.CheckWinHttpResult(Success: Boolean;
+  const Context: string);
+var
+  LLastError: DWORD;
 begin
-  Result := AURL.ToLower.StartsWith('https://');
+  if not Success then
+  begin
+    LLastError := GetLastError;
+    raise Exception.CreateFmt('Erro em %s: %s (Código: %d)',
+      [Context, TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
+  end;
+end;
+
+class function TClientHTTPUtils.CrackURL(const AURL: String): URL_COMPONENTS;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  Result.dwStructSize := SizeOf(Result);
+  Result.dwHostNameLength   := 1;
+  Result.dwUserNameLength   := 1;
+  Result.dwPasswordLength   := 1;
+  Result.dwUrlPathLength    := 1;
+  Result.dwExtraInfoLength  := 1;
+  Result.dwSchemeLength     := 1;
+
+  if not WinHttpCrackUrl(PWideChar(AURL), Length(AURL), ICU_REJECT_USERPWD, @Result) then
+    CheckWinHttpResult(False, 'WinHttpCrackUrl');
 end;
 
 class function TClientHTTPUtils.GetErrorMessage(ErrorCode: DWORD): string;
@@ -79,80 +101,6 @@ begin
     259: Result := 'Não há mais itens';
   else
     Result := 'Erro WinHTTP desconhecido: ' + IntToStr(ErrorCode);
-  end;
-end;
-
-class function TClientHTTPUtils.GetHost(const AURL: String): String;
-var
-  PortPos: Integer;
-begin
-  Result := AURL;
-
-  if Pos('https://', Result) = 1 then
-    Delete(Result, 1, 8)
-  else if Pos('http://', Result) = 1 then
-    Delete(Result, 1, 7);
-
-  PortPos := Pos(':', Result);
-  if PortPos > 0 then
-    Result := Copy(Result, 1, PortPos - 1);
-
-  PortPos := Pos('/', Result);
-  if PortPos > 0 then
-    Result := Copy(Result, 1, PortPos - 1);
-end;
-
-class function TClientHTTPUtils.GetPort(const AURL: String): WORD;
-var
-  Temp: String;
-  PortPos, SlashPos: Integer;
-begin
-  Result := 80;
-  Temp := AURL;
-
-  if Pos('https://', Temp) = 1 then
-  begin
-    Delete(Temp, 1, 8);
-    Result := 443;
-  end
-  else if Pos('http://', Temp) = 1 then
-    Delete(Temp, 1, 7);
-
-  PortPos := Pos(':', Temp);
-  if PortPos > 0 then
-  begin
-    SlashPos := Pos('/', Temp);
-    if SlashPos = 0 then
-      SlashPos := Length(Temp) + 1;
-
-    if PortPos < SlashPos then
-      Result := StrToIntDef(Copy(Temp, PortPos + 1, SlashPos - PortPos - 1), Result);
-  end;
-end;
-
-class function TClientHTTPUtils.GetURI(const AURL: String): String;
-var
-  StartPos: Integer;
-  SlashPos: Integer;
-begin
-  Result := AURL;
-
-  StartPos := Pos('://', Result);
-  if StartPos > 0 then
-  begin
-    SlashPos := PosEx('/', Result, StartPos + 3);
-    if SlashPos > 0 then
-      Result := Copy(Result, SlashPos, Length(Result) - SlashPos + 1)
-    else
-      Result := '/';
-  end
-  else
-  begin
-    SlashPos := Pos('/', Result);
-    if SlashPos > 0 then
-      Result := Copy(Result, SlashPos, Length(Result) - SlashPos + 1)
-    else
-      Result := '/';
   end;
 end;
 

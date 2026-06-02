@@ -4,46 +4,47 @@ interface
 
 uses
   Windows, SysUtils, Classes,
-  clientHttp.wrapper, ClientHttp.Utils, ClientHttp.Constantes, ClientHttp.Cert.Aux;
+  clientHttp.wrapper, ClientHttp.Utils, ClientHttp.Constantes, ClientHttp.Cert.Aux,
+  ClientHttp.Request, ClientHttp.Response;
 
 type
+  TClientHttpCoreConfig = record
+    Request: TClientHttpRequest;
+    Payload: TArray<Byte>;
+    BufferSizeRead: Cardinal;
+    CNCert: String;
+    Host: String;
+    Port: Cardinal;
+    URI: String;
+    Method: String;
+  end;
+
   TClientHttpCore = class
   private
     FSessao: HINTERNET;
     FConnect: HINTERNET;
     FRequest: HINTERNET;
-    FHost: string;
-    FPayLoadBuffer: TArray<Byte>;
-    PBufferCert: Pointer;
-    FResponse: TMemoryStream;
-    FBufferSizeRead: Cardinal;
-    FBufferRead: TArray<Byte>;
+    FCertContext: Pointer;
+    FConfig: TClientHttpCoreConfig;
 
     procedure Reset(const AHost: string);
-    procedure SetBufferRead(const Value: Cardinal);
-    procedure ReadData;
-    procedure CheckWinHttpResult(Success: Boolean; const Context: string);
+    procedure ReadData(const ABuffer : TStream);
+    procedure AddHeaders(const AHeader: string; dwFlags: Cardinal);
+    function GetHeaders: string;
+    function GetStatusCode: Integer;
+    procedure AddCertificadoByCN(const ACNCertificado: string);
+    procedure SetOptions(APointer: HINTERNET; dwOption: Cardinal; dwFlags: Cardinal);
   public
     constructor Create;
     destructor Destroy; override;
-
-    procedure Open(const AHost, AURI, AMethod: string; APort: Word; AFlags: Cardinal = 0);
-    procedure Send(const AAdditionalHeaders: string = '');
-    procedure AddPayload(const APayload: string); overload;
-    procedure AddPayload(APayload: TStream); overload;
-    procedure AddCertificadoByCN(const ACNCertificado: string);
-    procedure SetOptionsReq(dwOption: Cardinal; dwFlags: Cardinal);
-    procedure SetOptionsSession(dwOption: Cardinal; dwFlags: Cardinal);
-    procedure AddHeaders(const AHeader: string; dwFlags: Cardinal);
-
-    function GetHeaders: string;
-    function GetStatusCode: Integer;
-    function GetDataResponse: TStream;
-
-    property BufferSizeRead: Cardinal read FBufferSizeRead write SetBufferRead;
+    procedure Open(const AConfig : TClientHttpCoreConfig; AFlags: Cardinal = 0);
+    procedure Send(const AAdditionalHeaders: string; var AResponse : TClientHttpResponse);
   end;
 
 implementation
+
+type
+  TResponseAux = class(TClientHttpResponse);
 
 { TClientHttpCore }
 
@@ -53,44 +54,25 @@ begin
   FSessao := nil;
   FConnect := nil;
   FRequest := nil;
-  PBufferCert := nil;
-  FResponse := TMemoryStream.Create;
-  BufferSizeRead := 4096;
+  FCertContext := nil;
 end;
 
 destructor TClientHttpCore.Destroy;
 begin
-  // Ordem correta de fechamento de handles da WinHTTP
   if FRequest <> nil then WinHttpCloseHandle(FRequest);
   if FConnect <> nil then WinHttpCloseHandle(FConnect);
   if FSessao <> nil then WinHttpCloseHandle(FSessao);
 
-  if PBufferCert <> nil then CertFreeCertificateContext(PBufferCert);
-  FResponse.Free;
+  if FCertContext <> nil then CertFreeCertificateContext(FCertContext);
   inherited;
-end;
-
-procedure TClientHttpCore.CheckWinHttpResult(Success: Boolean; const Context: string);
-var
-  LLastError: DWORD;
-begin
-  if not Success then
-  begin
-    LLastError := GetLastError;
-    raise Exception.CreateFmt('Erro em %s: %s (Código: %d)',
-      [Context, TClientHTTPUtils.GetErrorMessage(LLastError), LLastError]);
-  end;
 end;
 
 procedure TClientHttpCore.Reset(const AHost: string);
 begin
-  FResponse.Clear;
-  FPayLoadBuffer := nil;
-
-  if PBufferCert <> nil then
+  if FCertContext <> nil then
   begin
-    CertFreeCertificateContext(PBufferCert);
-    PBufferCert := nil;
+    CertFreeCertificateContext(FCertContext);
+    FCertContext := nil;
   end;
 
   if FRequest <> nil then
@@ -99,7 +81,7 @@ begin
     FRequest := nil;
   end;
 
-  if (FHost <> AHost) and (FConnect <> nil) then
+  if (FConfig.Host <> AHost) and (FConnect <> nil) then
   begin
     WinHttpCloseHandle(FConnect);
     FConnect := nil;
@@ -111,59 +93,59 @@ begin
     end;
   end;
 
-  FHost := AHost;
+  FConfig.Host := AHost;
 end;
 
-procedure TClientHttpCore.Open(const AHost, AURI, AMethod: string; APort: Word; AFlags: Cardinal);
+procedure TClientHttpCore.Open(const AConfig : TClientHttpCoreConfig; AFlags: Cardinal = 0);
 begin
-  Reset(AHost);
+  FConfig := AConfig;
+  Reset(FConfig.Host);
 
   if FSessao = nil then
   begin
     FSessao := WinHttpOpen('Sistema 1.0', WINHTTP_ACCESS_TYPE_NO_PROXY,
       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    CheckWinHttpResult(FSessao <> nil, 'WinHttpOpen');
+    TClientHTTPUtils.CheckWinHttpResult(FSessao <> nil, 'WinHttpOpen');
   end;
 
   if FConnect = nil then
   begin
-    FConnect := WinHttpConnect(FSessao, PChar(AHost), APort, 0);
-    CheckWinHttpResult(FConnect <> nil, 'WinHttpConnect');
+    FConnect := WinHttpConnect(FSessao, PChar(FConfig.Host), FConfig.Port, 0);
+    TClientHTTPUtils.CheckWinHttpResult(FConnect <> nil, 'WinHttpConnect');
   end;
 
   if FRequest = nil then
   begin
-    FRequest := WinHttpOpenRequest(FConnect, PChar(AMethod), PChar(AURI),
+    FRequest := WinHttpOpenRequest(FConnect, PChar(FConfig.Method), PChar(FConfig.URI),
       nil, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, AFlags);
-    CheckWinHttpResult(FRequest <> nil, 'WinHttpOpenRequest');
+    TClientHTTPUtils.CheckWinHttpResult(FRequest <> nil, 'WinHttpOpenRequest');
   end;
-end;
 
-procedure TClientHttpCore.AddPayload(const APayload: string);
-begin
-  if APayload.Trim.IsEmpty then Exit;
-  FPayLoadBuffer := TEncoding.UTF8.GetBytes(APayload);
-end;
+  // Protocols
+  SetOptions(FSessao, WINHTTP_OPTION_SECURE_PROTOCOLS, FConfig.Request.GetWinHttpProtocolsMask);
 
-procedure TClientHttpCore.AddPayload(APayload: TStream);
-begin
-  if (APayload = nil) or (APayload.Size = 0) then Exit;
+  // Timeouts
+  SetOptions(FSessao, WINHTTP_OPTION_CONNECT_TIMEOUT, FConfig.Request.ConnectTimeOut);
+  SetOptions(FSessao, WINHTTP_OPTION_SEND_TIMEOUT, FConfig.Request.SendTimeOut);
+  SetOptions(FSessao, WINHTTP_OPTION_RECEIVE_TIMEOUT, FConfig.Request.ReceiveTimeOut);
 
-  SetLength(FPayLoadBuffer, APayload.Size);
-  APayload.Position := 0;
-  APayload.ReadBuffer(FPayLoadBuffer[0], APayload.Size);
+  // Headers
+  AddHeaders(FConfig.Request.GetFormattedHeaders, 0);
+
+  // Certificado
+  AddCertificadoByCN(FConfig.CNCert);
 end;
 
 procedure TClientHttpCore.AddCertificadoByCN(const ACNCertificado: string);
 begin
   if ACNCertificado.Trim.IsEmpty then Exit;
 
-  PBufferCert := FindValidCertContext(ACNCertificado);
-  if PBufferCert = nil then
+  FCertContext := FindValidCertContext(ACNCertificado);
+  if FCertContext = nil then
     raise Exception.Create('Certificado não encontrado: ' + ACNCertificado);
 
-  CheckWinHttpResult(
-    WinHttpSetOption(FRequest, WINHTTP_OPTION_CLIENT_CERT_CONTEXT, PBufferCert, SizeOf(TCertContext)),
+  TClientHTTPUtils.CheckWinHttpResult(
+    WinHttpSetOption(FRequest, WINHTTP_OPTION_CLIENT_CERT_CONTEXT, FCertContext, SizeOf(TCertContext)),
     'WinHttpSetOption (Certificado)'
   );
 end;
@@ -171,13 +153,13 @@ end;
 procedure TClientHttpCore.AddHeaders(const AHeader: string; dwFlags: Cardinal);
 begin
   if AHeader.IsEmpty then Exit;
-  CheckWinHttpResult(
+  TClientHTTPUtils.CheckWinHttpResult(
     WinHttpAddRequestHeaders(FRequest, PChar(AHeader), Length(AHeader), dwFlags),
     'WinHttpAddRequestHeaders'
   );
 end;
 
-procedure TClientHttpCore.Send(const AAdditionalHeaders: string);
+procedure TClientHttpCore.Send(const AAdditionalHeaders: string; var AResponse : TClientHttpResponse);
 var
   PBuffer: Pointer;
   LPayLoadBufferSize: Cardinal;
@@ -186,10 +168,10 @@ begin
   PBuffer := nil;
   LPayLoadBufferSize := 0;
 
-  if Length(FPayLoadBuffer) > 0 then
+  if Length(FConfig.Payload) > 0 then
   begin
-    PBuffer := @FPayLoadBuffer[0];
-    LPayLoadBufferSize := Length(FPayLoadBuffer);
+    PBuffer := @FConfig.Payload[0];
+    LPayLoadBufferSize := Length(FConfig.Payload);
   end;
 
   if AAdditionalHeaders.IsEmpty then
@@ -197,44 +179,47 @@ begin
   else
     PHeaders := PChar(AAdditionalHeaders);
 
-  CheckWinHttpResult(
+  TClientHTTPUtils.CheckWinHttpResult(
     WinHttpSendRequest(FRequest, PHeaders, Length(AAdditionalHeaders), PBuffer, LPayLoadBufferSize, LPayLoadBufferSize, 0),
     'WinHttpSendRequest'
   );
 
-  CheckWinHttpResult(WinHttpReceiveResponse(FRequest, nil), 'WinHttpReceiveResponse');
-
-  ReadData;
+  TClientHTTPUtils.CheckWinHttpResult(WinHttpReceiveResponse(FRequest, nil), 'WinHttpReceiveResponse');
+  ReadData(TResponseAux(AResponse).GetStream);
+  TResponseAux(AResponse).ParseHeader(GetHeaders);
+  TResponseAux(AResponse).AddStatus(GetStatusCode);
 end;
 
-procedure TClientHttpCore.ReadData;
+procedure TClientHttpCore.ReadData(const ABuffer : TStream);
 var
   LBytesDisponiveis: Cardinal;
   LBytesLidos: Cardinal;
   LBufferToRead: Cardinal;
+  LBufferRead: TArray<Byte>;
 begin
+  SetLength(LBufferRead, FConfig.BufferSizeRead);
   repeat
     LBytesLidos := 0;
-    CheckWinHttpResult(WinHttpQueryDataAvailable(FRequest, @LBytesDisponiveis), 'WinHttpQueryDataAvailable');
+    TClientHTTPUtils.CheckWinHttpResult(WinHttpQueryDataAvailable(FRequest, @LBytesDisponiveis), 'WinHttpQueryDataAvailable');
 
     if LBytesDisponiveis = 0 then Break;
 
-    if LBytesDisponiveis < Cardinal(Length(FBufferRead)) then
+    if LBytesDisponiveis < Cardinal(Length(LBufferRead)) then
       LBufferToRead := LBytesDisponiveis
     else
-      LBufferToRead := Length(FBufferRead);
+      LBufferToRead := Length(LBufferRead);
 
-    CheckWinHttpResult(
-      WinHttpReadData(FRequest, @FBufferRead[0], LBufferToRead, @LBytesLidos),
+    TClientHTTPUtils.CheckWinHttpResult(
+      WinHttpReadData(FRequest, @LBufferRead[0], LBufferToRead, @LBytesLidos),
       'WinHttpReadData'
     );
 
     if LBytesLidos > 0 then
-      FResponse.WriteBuffer(FBufferRead[0], LBytesLidos);
+      ABuffer.WriteBuffer(LBufferRead[0], LBytesLidos);
 
   until LBytesDisponiveis = 0;
 
-  FResponse.Position := 0; // Facilita a leitura posterior externa
+  ABuffer.Position := 0;
 end;
 
 function TClientHttpCore.GetHeaders: string;
@@ -247,22 +232,21 @@ begin
   LSize := 0;
   LIndex := WINHTTP_NO_HEADER_INDEX;
 
-  // Primeira chamada descobre o tamanho necessário
   if not WinHttpQueryHeaders(FRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, nil, @LSize, @LIndex) then
   begin
     if GetLastError <> ERROR_INSUFFICIENT_BUFFER then
-      CheckWinHttpResult(False, 'WinHttpQueryHeaders (Size)');
+      TClientHTTPUtils.CheckWinHttpResult(False, 'WinHttpQueryHeaders (Size)');
   end;
 
   SetLength(LRawHeaders, LSize div SizeOf(WChar));
   LIndex := WINHTTP_NO_HEADER_INDEX;
 
-  CheckWinHttpResult(
+  TClientHTTPUtils.CheckWinHttpResult(
     WinHttpQueryHeaders(FRequest, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, PChar(LRawHeaders), @LSize, @LIndex),
     'WinHttpQueryHeaders (Data)'
   );
 
-  Result := LRawHeaders;
+  Result := PChar(LRawHeaders);
 end;
 
 function TClientHttpCore.GetStatusCode: Integer;
@@ -281,33 +265,11 @@ begin
   end;
 end;
 
-function TClientHttpCore.GetDataResponse: TStream;
+procedure TClientHttpCore.SetOptions(APointer: HINTERNET; dwOption, dwFlags: Cardinal);
 begin
-  Result := FResponse;
-end;
-
-procedure TClientHttpCore.SetBufferRead(const Value: Cardinal);
-begin
-  if FBufferSizeRead <> Value then
-  begin
-    FBufferSizeRead := Value;
-    SetLength(FBufferRead, FBufferSizeRead);
-  end;
-end;
-
-procedure TClientHttpCore.SetOptionsReq(dwOption, dwFlags: Cardinal);
-begin
-  CheckWinHttpResult(
-    WinHttpSetOption(FRequest, dwOption, @dwFlags, SizeOf(dwFlags)),
+  TClientHTTPUtils.CheckWinHttpResult(
+    WinHttpSetOption(APointer, dwOption, @dwFlags, SizeOf(dwFlags)),
     'WinHttpSetOption (Request)'
-  );
-end;
-
-procedure TClientHttpCore.SetOptionsSession(dwOption, dwFlags: Cardinal);
-begin
-  CheckWinHttpResult(
-    WinHttpSetOption(FSessao, dwOption, @dwFlags, SizeOf(dwFlags)),
-    'WinHttpSetOption (Session)'
   );
 end;
 

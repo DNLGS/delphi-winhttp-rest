@@ -5,7 +5,7 @@ interface
 uses
   clientHttp.wrapper, Generics.Collections, SysUtils, Windows, Classes,
   StrUtils, ClientHttp.Utils, ClientHttp.Constantes,
-  ClientHttp.Core, ClientHttp.Cert.Aux, ClientHttp.Request, ClientHttp.Response;
+  ClientHttp.Core, ClientHttp.Request, ClientHttp.Response;
 
 type
   TClientHTTP = class
@@ -14,16 +14,13 @@ type
     FRequest: TClientHttpRequest;
     FResponse: TClientHttpResponse;
     FCertSubject: String;
+    FBufferReadSize: Cardinal;
 
-    function EnviarReq(Metodo: TMetodo; const APayload: String; AURL: String): Boolean;
+    function EnviarReq(Metodo: TMetodo; const APayload: TStream; const AURL: String): Boolean;
   public
-    function Get(const URL: String): Boolean;
-    function Post(const URL, Payload: String): Boolean;
-    function Put(const URL, Payload: String): Boolean;
-    function Patch(const URL, Payload: String): Boolean;
-    function Delete(const URL : String): Boolean;
-
+    procedure Execute(AMethod: TMetodo; const AURL: String; const APayload: TStream);
     property CNCertificado: String read FCertSubject write FCertSubject;
+    property BufferReadSize: Cardinal read FBufferReadSize write FBufferReadSize;
     property Request: TClientHttpRequest read FRequest write FRequest;
     property Response: TClientHttpResponse read FResponse write FResponse;
     procedure Clear;
@@ -33,10 +30,6 @@ type
   end;
 
 implementation
-
-type
-  TResponseAux = class(TClientHttpResponse);
-
 
 procedure TClientHTTP.Clear;
 begin
@@ -49,11 +42,7 @@ begin
   FCore := TClientHttpCore.Create;
   FRequest := TClientHttpRequest.Create;
   FResponse := TClientHttpResponse.Create;
-end;
-
-function TClientHTTP.Delete(const URL: String): Boolean;
-begin
-  Result := EnviarReq(mDelete,'',URL);
+  FBufferReadSize := 4096;
 end;
 
 destructor TClientHTTP.Destroy;
@@ -64,69 +53,45 @@ begin
   inherited;
 end;
 
-function TClientHTTP.EnviarReq(Metodo: TMetodo; const APayload: String; AURL: String): Boolean;
+function TClientHTTP.EnviarReq(Metodo: TMetodo; const APayload: TStream; const AURL: String): Boolean;
 const
   MethodStr: array[TMetodo] of PwChar = ('GET', 'POST', 'PUT', 'PATCH', 'DELETE');
 var
   dwFlags : DWORD;
-  lPort : DWORD;
-  lURI : PwChar;
-  lHost : PwChar;
+  LCompURL : URL_COMPONENTS;
+  LConfig: TClientHttpCoreConfig;
 begin
   dwFlags := 0;
+  FillChar(LConfig, SizeOf(LConfig), 0);
 
-  if TClientHTTPUtils.IsHttps(AURL) then
+  LCompURL := TClientHTTPUtils.CrackURL(AURL);
+
+  if LCompURL.nScheme = 2 then // HTTPS
     dwFlags := WINHTTP_FLAG_SECURE;
 
-  lPort := TClientHTTPUtils.GetPort(AURL);
-  lHost := PwChar(TClientHTTPUtils.GetHost(AURL));
-  lURI := PwChar(TClientHTTPUtils.GetURI(AURL));
-  try
-    FCore.Open(lHost,lURI,MethodStr[Metodo],lPort, dwFlags);
-    FCore.AddPayload(APayload);
-    // Add Certificado
-    FCore.AddCertificadoByCN(FCertSubject);
-    // Add Protocols
-    FCore.SetOptionsSession(WINHTTP_OPTION_SECURE_PROTOCOLS, FRequest.GetWinHttpProtocolsMask);
-    // Add Timeouts
-    FCore.SetOptionsSession(WINHTTP_OPTION_CONNECT_TIMEOUT,FRequest.ConnectTimeOut);
-    FCore.SetOptionsSession(WINHTTP_OPTION_SEND_TIMEOUT,FRequest.SendTimeOut);
-    FCore.SetOptionsSession(WINHTTP_OPTION_RECEIVE_TIMEOUT,FRequest.ReceiveTimeOut);
+  LConfig.Request := FRequest;
+  LConfig.Host := Copy(LCompUrl.lpszHostName, 1, LCompUrl.dwHostNameLength);
+  LConfig.Port := LCompUrl.nPort;
+  LConfig.URI := LCompUrl.lpszUrlPath;
+  LConfig.Method := MethodStr[Metodo];
+  LConfig.BufferSizeRead := FBufferReadSize;
+  LConfig.CNCert := FCertSubject;
 
-    // Headers
-    FCore.AddHeaders(PwChar(FRequest.GetFormattedHeaders), 0);
-
-    // Envio
-    FCore.Send('');
-    Result := True;
-  except
-    on E: Exception do
-      raise Exception.Create(E.Message);
+  if (APayload <> nil) and (APayload.Size > 0) then
+  begin
+    APayload.Position := 0;
+    SetLength(LConfig.Payload, APayload.Size);
+    APayload.ReadBuffer(LConfig.Payload[0], APayload.Size);
   end;
 
-  TResponseAux(FResponse).ParseHeader(FCore.GetHeaders);
-  TResponseAux(FResponse).AddStatus(FCore.GetStatusCode);
-  TResponseAux(FResponse).GetResponse(FCore.GetDataResponse);
+  FCore.Open(LConfig, dwFlags);
+  FCore.Send('', FResponse);
+  Result := True;
 end;
 
-function TClientHTTP.Get(const URL: String): Boolean;
+procedure TClientHTTP.Execute(AMethod: TMetodo; const AURL: String; const APayload: TStream);
 begin
-  Result := EnviarReq(mGET,'', URL);
-end;
-
-function TClientHTTP.Patch(const URL, Payload: String): Boolean;
-begin
-  Result := EnviarReq(mPatch,'',URL);
-end;
-
-function TClientHTTP.Post(const URL, Payload: String): Boolean;
-begin
-  Result := EnviarReq(mPOST, Payload, URL);
-end;
-
-function TClientHTTP.Put(const URL, Payload: String): Boolean;
-begin
-  Result := EnviarReq(mPUT, Payload, URL);
+  EnviarReq(AMethod, APayload, AURL);
 end;
 
 end.
